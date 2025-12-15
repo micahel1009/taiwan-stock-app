@@ -8,44 +8,55 @@ import os
 import requests
 
 # ==========================================
-# 1. 網頁設定與字型下載 (防崩潰版)
+# 1. 網頁設定
 # ==========================================
 st.set_page_config(page_title="台灣權值股分析系統", layout="wide")
 
-# 下載中文字型函式
+# ==========================================
+# 2. 字型處理 (包含防崩潰機制)
+# ==========================================
 def get_chinese_font():
+    # 字型檔案設定
+    font_name = "NotoSansTC-Regular.ttf"
     font_url = "https://github.com/google/fonts/raw/main/ofl/notosanstc/NotoSansTC-Regular.ttf"
-    font_path = "NotoSansTC-Regular.ttf"
-    font_prop = None
     
-    # 嘗試下載
-    if not os.path.exists(font_path):
-        try:
-            response = requests.get(font_url)
-            if response.status_code == 200:
-                with open(font_path, "wb") as f:
-                    f.write(response.content)
-            else:
-                st.warning("⚠️ 字型下載失敗 (網路問題)，將使用預設字型。")
-        except:
-            st.warning("⚠️ 字型下載發生錯誤，將使用預設字型。")
-            return None
+    # 1. 如果檔案存在，但小於 1MB (代表下載失敗或壞檔)，先刪除它
+    if os.path.exists(font_name):
+        if os.path.getsize(font_name) < 1000000: # 小於 1MB
+            try:
+                os.remove(font_name)
+                print("已刪除損壞的字型檔")
+            except:
+                pass
 
-    # 嘗試載入
-    try:
-        if os.path.exists(font_path):
-            font_prop = fm.FontProperties(fname=font_path)
-    except:
-        st.warning("⚠️ 字型檔讀取失敗，將使用預設字型。")
-        return None
-        
-    return font_prop
+    # 2. 如果檔案不存在，嘗試下載
+    if not os.path.exists(font_name):
+        with st.spinner("正在下載中文字型 (首次執行需約 10 秒)..."):
+            try:
+                response = requests.get(font_url, timeout=10)
+                if response.status_code == 200:
+                    with open(font_name, "wb") as f:
+                        f.write(response.content)
+                else:
+                    return None # 下載失敗
+            except:
+                return None # 網路錯誤
+
+    # 3. 再次檢查檔案大小，確認是否下載成功
+    if os.path.exists(font_name) and os.path.getsize(font_name) > 1000000:
+        return fm.FontProperties(fname=font_name)
+    else:
+        return None # 檔案還是有問題，放棄使用中文
 
 # 取得字型物件 (如果失敗會是 None)
 font_prop = get_chinese_font()
 
+# 設定全域字型 (如果 font_prop 有效)
+if font_prop:
+    plt.rcParams['font.family'] = font_prop.get_name()
+
 # ==========================================
-# 2. 資料載入與處理邏輯
+# 3. 資料載入與處理邏輯
 # ==========================================
 @st.cache_data
 def load_and_process_data():
@@ -66,9 +77,12 @@ def load_and_process_data():
     # 模擬缺失
     df_dirty = data.copy()
     if not df_dirty.empty:
-        df_dirty.iloc[0:5, df_dirty.columns.get_loc("台積電")] = np.nan
-        df_dirty.iloc[10:13, df_dirty.columns.get_loc("鴻海")] = np.nan
-        df_dirty.iloc[20, df_dirty.columns.get_loc("聯發科")] = np.nan
+        try:
+            df_dirty.iloc[0:5, df_dirty.columns.get_loc("台積電")] = np.nan
+            df_dirty.iloc[10:13, df_dirty.columns.get_loc("鴻海")] = np.nan
+            df_dirty.iloc[20, df_dirty.columns.get_loc("聯發科")] = np.nan
+        except:
+            pass # 防止索引錯誤
     
     missing_dirty = df_dirty.isnull().sum().to_frame("缺失筆數").T
 
@@ -85,13 +99,15 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 3. 網頁介面設計
+# 4. 網頁介面設計
 # ==========================================
 st.title("📈 台灣前十大權值股 - 分析與資料清洗展示")
 
-st.header("1. 資料清洗三部曲 (模擬展示)")
-st.markdown("從 **原始資料** $\\rightarrow$ **模擬缺失** $\\rightarrow$ **修復完成** 的過程。")
+# 顯示警告：如果字型下載失敗
+if font_prop is None:
+    st.warning("⚠️ 注意：中文字型下載失敗，圖表將顯示英文或方框，但程式不會崩潰。")
 
+st.header("1. 資料清洗三部曲 (模擬展示)")
 col1, col2, col3 = st.columns(3)
 with col1:
     st.info("步驟 1：原始資料")
@@ -134,22 +150,40 @@ with tab_trend:
     if selected_view == "全部比較 (歸一化)":
         for col in df_final.columns:
             normalized = df_final[col] / df_final[col].iloc[0]
-            ax.plot(normalized, label=col, alpha=0.7)
-        ax.set_ylabel("累計報酬倍數", fontproperties=font_prop)
+            # 安全繪圖：如果沒有字型，就不傳入 fontproperties
+            if font_prop:
+                ax.plot(normalized, label=col, alpha=0.7)
+            else:
+                ax.plot(normalized, label=col, alpha=0.7)
+        
+        ylabel_text = "累計報酬倍數" if font_prop else "Cumulative Return"
+        if font_prop:
+            ax.set_ylabel(ylabel_text, fontproperties=font_prop)
+        else:
+            ax.set_ylabel(ylabel_text)
+            
     else:
         ax.plot(df_final[selected_view], label=selected_view, color='blue')
         ma20 = df_final[selected_view].rolling(20).mean()
         ax.plot(ma20, label='20MA', color='orange', linestyle='--')
-        ax.set_ylabel("股價 (TWD)", fontproperties=font_prop)
+        
+        ylabel_text = "股價 (TWD)" if font_prop else "Price (TWD)"
+        if font_prop:
+            ax.set_ylabel(ylabel_text, fontproperties=font_prop)
+        else:
+            ax.set_ylabel(ylabel_text)
+    
+    # 統一設定標題與圖例 (防崩潰)
+    title_text = f"{selected_view} 走勢圖" if font_prop else f"{selected_view} Trend"
     
     if font_prop:
         ax.legend(prop=font_prop)
-        ax.set_title(f"{selected_view} 走勢圖", fontproperties=font_prop, fontsize=14)
+        ax.set_title(title_text, fontproperties=font_prop, fontsize=14)
         for label in ax.get_xticklabels() + ax.get_yticklabels():
             label.set_fontproperties(font_prop)
     else:
         ax.legend()
-        ax.set_title(f"{selected_view} 走勢圖")
+        ax.set_title(title_text)
         
     ax.grid(True, alpha=0.3)
     st.pyplot(fig)
@@ -168,12 +202,19 @@ with tab_risk:
         else:
             ax2.text(x.iloc[i]+0.002, y.iloc[i], txt)
             
-    ax2.set_xlabel("風險 (波動率)", fontproperties=font_prop)
-    ax2.set_ylabel("年化報酬率", fontproperties=font_prop)
-    ax2.grid(True, alpha=0.3)
+    xlabel_text = "風險 (波動率)" if font_prop else "Risk (Volatility)"
+    ylabel_text = "年化報酬率" if font_prop else "Annual Return"
+    
     if font_prop:
+        ax2.set_xlabel(xlabel_text, fontproperties=font_prop)
+        ax2.set_ylabel(ylabel_text, fontproperties=font_prop)
         for label in ax2.get_xticklabels() + ax2.get_yticklabels():
             label.set_fontproperties(font_prop)
+    else:
+        ax2.set_xlabel(xlabel_text)
+        ax2.set_ylabel(ylabel_text)
+        
+    ax2.grid(True, alpha=0.3)
     st.pyplot(fig2)
 
 with tab_rank:
@@ -185,11 +226,15 @@ with tab_rank:
     colors = ['red' if v > 0 else 'green' for v in total_return.values]
     ax3.bar(total_return.index, total_return.values, color=colors)
     
-    ax3.set_ylabel("報酬率 %", fontproperties=font_prop)
-    ax3.grid(axis='y', linestyle='--', alpha=0.5)
-    
+    ylabel_text = "報酬率 %" if font_prop else "Return %"
     if font_prop:
+        ax3.set_ylabel(ylabel_text, fontproperties=font_prop)
         ax3.set_xticklabels(total_return.index, fontproperties=font_prop, fontsize=12)
         for label in ax3.get_yticklabels():
             label.set_fontproperties(font_prop)
+    else:
+        ax3.set_ylabel(ylabel_text)
+        ax3.set_xticklabels(total_return.index, fontsize=12)
+        
+    ax3.grid(axis='y', linestyle='--', alpha=0.5)
     st.pyplot(fig3)
