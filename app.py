@@ -2,149 +2,123 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 import yfinance as yf
+import os
+import requests
 
 # ==========================================
-# 1. 網頁設定與字型設定
+# 1. 字型設定 (終極手動載入版)
 # ==========================================
 st.set_page_config(page_title="台灣權值股分析系統", layout="wide")
 
-# 設定 Matplotlib 使用系統安裝的中文字型
-# 'WenQuanYi Zen Hei' 是我們透過 packages.txt 安裝的字型
-plt.rcParams['font.sans-serif'] = ['WenQuanYi Zen Hei']
-plt.rcParams['font.family'] = ['WenQuanYi Zen Hei'] # 強制設定字族
-plt.rcParams['axes.unicode_minus'] = False # 讓負號正常顯示
+@st.cache_resource
+def get_font():
+    font_path = "NotoSansTC-Regular.ttf"
+    font_url = "https://github.com/google/fonts/raw/main/ofl/notosanstc/NotoSansTC-Regular.ttf"
+    
+    # 如果檔案不在，就下載
+    if not os.path.exists(font_path):
+        with st.spinner("正在下載中文字型檔..."):
+            try:
+                response = requests.get(font_url)
+                with open(font_path, "wb") as f:
+                    f.write(response.content)
+            except:
+                return None
+    
+    # 直接回傳字型屬性物件
+    return fm.FontProperties(fname=font_path)
+
+# 取得字型物件
+my_font = get_font()
 
 # ==========================================
-# 2. 資料載入與處理邏輯
+# 2. 資料載入
 # ==========================================
 @st.cache_data
-def load_and_process_data():
+def load_data():
     tickers = {
         "2330.TW": "台積電", "2317.TW": "鴻海", "2454.TW": "聯發科",
         "2308.TW": "台達電", "2382.TW": "廣達", "2881.TW": "富邦金",
         "2882.TW": "國泰金", "2412.TW": "中華電", "2303.TW": "聯電",
         "2891.TW": "中信金"
     }
-    
-    # 下載資料
     data = yf.download(list(tickers.keys()), start="2023-01-01", auto_adjust=False)['Adj Close']
     data.rename(columns=tickers, inplace=True)
     
-    df_original = data.copy()
-    missing_orig = df_original.isnull().sum().to_frame("缺失筆數").T
-
-    # 模擬缺失
+    # 建立三種狀態的資料
+    df_orig = data.copy()
+    
     df_dirty = data.copy()
-    if not df_dirty.empty:
+    if not df_dirty.empty: # 模擬缺失
         try:
-            df_dirty.iloc[0:5, df_dirty.columns.get_loc("台積電")] = np.nan
-            df_dirty.iloc[10:13, df_dirty.columns.get_loc("鴻海")] = np.nan
-            df_dirty.iloc[20, df_dirty.columns.get_loc("聯發科")] = np.nan
-        except:
-            pass
+            df_dirty.iloc[0:5, 0] = np.nan
+            df_dirty.iloc[10:13, 1] = np.nan
+        except: pass
+        
+    df_clean = df_dirty.ffill().bfill() # 修復
     
-    missing_dirty = df_dirty.isnull().sum().to_frame("缺失筆數").T
-
-    # 修復
-    df_clean = df_dirty.ffill().bfill()
-    missing_clean = df_clean.isnull().sum().to_frame("缺失筆數").T
-    
-    return tickers, df_original, missing_orig, df_dirty, missing_dirty, df_clean, missing_clean
+    return tickers, df_orig, df_dirty, df_clean
 
 try:
-    tickers_map, df_orig, miss_orig, df_dirty, miss_dirty, df_final, miss_final = load_and_process_data()
-except Exception as e:
-    st.error(f"資料載入失敗: {e}")
+    tickers_map, df_orig, df_dirty, df_final = load_data()
+except:
+    st.error("資料下載失敗，請重新整理網頁")
     st.stop()
 
 # ==========================================
-# 3. 網頁介面設計
+# 3. 畫面顯示
 # ==========================================
-st.title("📈 台灣前十大權值股 - 分析與資料清洗展示")
+st.title("📈 台灣前十大權值股分析")
 
-st.header("1. 資料清洗三部曲 (模擬展示)")
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.info("步驟 1：原始資料")
-    st.dataframe(miss_orig)
-with col2:
-    st.warning("步驟 2：模擬缺失")
-    st.dataframe(miss_dirty.style.highlight_max(axis=1, color='pink'))
-with col3:
-    st.success("步驟 3：修復完成")
-    st.dataframe(miss_final)
+st.header("1. 資料清洗演示")
+c1, c2, c3 = st.columns(3)
+c1.dataframe(df_orig.isnull().sum().to_frame("原始缺失").T)
+c2.dataframe(df_dirty.isnull().sum().to_frame("模擬缺失").T.style.highlight_max(axis=1, color='pink'))
+c3.dataframe(df_final.isnull().sum().to_frame("修復後").T)
 
-st.markdown("---")
+st.header("2. 視覺化儀表板")
+tab1, tab2 = st.tabs(["股價走勢", "報酬排行"])
 
-st.header("2. 統計數據分析")
-returns = df_final.pct_change()
-summary_df = pd.DataFrame({
-    '平均報酬率 (年化)': returns.mean() * 252,
-    '風險波動率 (年化)': returns.std() * np.sqrt(252)
-})
-
-c1, c2 = st.columns(2)
-with c1:
-    st.subheader("📊 股價統計摘要")
-    st.dataframe(df_final.describe())
-with c2:
-    st.subheader("⚖️ 風險 vs 報酬表")
-    st.dataframe(summary_df.style.format("{:.4f}").background_gradient(cmap="Blues"))
-
-st.markdown("---")
-
-st.header("3. 視覺化儀表板")
-tab_trend, tab_risk, tab_rank = st.tabs(["📈 股價走勢圖", "⚖️ 風險報酬分析", "🏆 報酬率排行"])
-
-with tab_trend:
+with tab1:
     st.subheader("股價走勢")
-    options = ["全部比較 (歸一化)"] + list(tickers_map.values())
-    selected_view = st.selectbox("選擇股票:", options)
+    stock = st.selectbox("選擇股票", ["全部"] + list(tickers_map.values()))
     
     fig, ax = plt.subplots(figsize=(10, 5))
-    if selected_view == "全部比較 (歸一化)":
+    if stock == "全部":
         for col in df_final.columns:
-            normalized = df_final[col] / df_final[col].iloc[0]
-            ax.plot(normalized, label=col, alpha=0.7)
-        ax.set_ylabel("累計報酬倍數")
+            ax.plot(df_final[col]/df_final[col].iloc[0], label=col)
+        ylabel = "倍數"
     else:
-        ax.plot(df_final[selected_view], label=selected_view, color='blue')
-        ma20 = df_final[selected_view].rolling(20).mean()
-        ax.plot(ma20, label='20MA', color='orange', linestyle='--')
-        ax.set_ylabel("股價 (TWD)")
-    
-    ax.legend()
-    ax.set_title(f"{selected_view} 走勢圖", fontsize=14)
+        ax.plot(df_final[stock], label=stock)
+        ylabel = "價格"
+
+    # 【關鍵】這裡手動指定字型，不依賴系統
+    if my_font:
+        ax.set_title(f"{stock} 走勢圖", fontproperties=my_font, fontsize=15)
+        ax.set_ylabel(ylabel, fontproperties=my_font)
+        ax.legend(prop=my_font)
+        for label in ax.get_xticklabels() + ax.get_yticklabels():
+            label.set_fontproperties(my_font)
+    else:
+        ax.set_title(f"{stock} Trend")
+        ax.legend()
+        
     ax.grid(True, alpha=0.3)
     st.pyplot(fig)
 
-with tab_risk:
-    st.subheader("風險 vs 報酬")
-    fig2, ax2 = plt.subplots(figsize=(10, 6))
-    x = summary_df['風險波動率 (年化)']
-    y = summary_df['平均報酬率 (年化)']
-    
-    ax2.scatter(x, y, color='red', s=100, alpha=0.7)
-    
-    for i, txt in enumerate(summary_df.index):
-        ax2.text(x.iloc[i]+0.002, y.iloc[i], txt, fontsize=12)
-            
-    ax2.set_xlabel("風險 (波動率)")
-    ax2.set_ylabel("年化報酬率")
-    ax2.grid(True, alpha=0.3)
-    st.pyplot(fig2)
-
-with tab_rank:
+with tab2:
     st.subheader("報酬率排行")
-    total_return = (df_final.iloc[-1] / df_final.iloc[0] - 1) * 100
-    total_return = total_return.sort_values(ascending=False)
+    ret = (df_final.iloc[-1]/df_final.iloc[0] - 1) * 100
+    ret = ret.sort_values(ascending=False)
     
-    fig3, ax3 = plt.subplots(figsize=(10, 6))
-    colors = ['red' if v > 0 else 'green' for v in total_return.values]
-    ax3.bar(total_return.index, total_return.values, color=colors)
+    fig2, ax2 = plt.subplots(figsize=(10, 6))
+    colors = ['red' if v > 0 else 'green' for v in ret.values]
+    ax2.bar(ret.index, ret.values, color=colors)
     
-    ax3.set_ylabel("報酬率 %")
-    ax3.set_xticklabels(total_return.index, fontsize=12)
-    ax3.grid(axis='y', linestyle='--', alpha=0.5)
-    st.pyplot(fig3)
+    if my_font:
+        ax2.set_xticklabels(ret.index, fontproperties=my_font, fontsize=12)
+        ax2.set_ylabel("報酬率 %", fontproperties=my_font)
+        
+    st.pyplot(fig2)
